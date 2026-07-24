@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML5 Fortnite Mini (3D 建築＆射撃ゲーム)</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            font-family: 'Arial', sans-serif;
+            user-select: none;
+        }
+
+        /* ゲーム画面 */
+        #game-container {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* 画面中央の照準（レティクル） */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        #crosshair::before { top: 4px; left: -10px; width: 30px; height: 2px; }
+        #crosshair::after { top: -10px; left: 4px; width: 2px; height: 30px; }
+
+        /* スタート画面 / ポーズ画面 */
+        #blocker {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            color: white;
+            text-align: center;
+        }
+
+        #instructions {
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 40px;
+            border-radius: 20px;
+            border: 2px solid #00e5ff;
+            box-shadow: 0 0 20px #00e5ff;
+        }
+
+        h1 {
+            color: #00e5ff;
+            margin-top: 0;
+            font-size: 3rem;
+            text-shadow: 0 0 10px #00e5ff;
+        }
+
+        /* プレイ中のUI */
+        #hud {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: white;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .hud-item {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 10px 20px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 5px solid #00e5ff;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        #hp-bar-container {
+            width: 200px;
+            height: 20px;
+            background: #555;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        #hp-bar {
+            width: 100%;
+            height: 100%;
+            background: #ff1744;
+            transition: width 0.1s;
+        }
+
+        #wood-count {
+            color: #ffb74d;
+        }
+
+        #kill-counter {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 1.5rem;
+            color: #fff;
+            background: rgba(0,0,0,0.6);
+            padding: 10px 20px;
+            border-radius: 8px;
+            border-right: 5px solid #00e676;
+            font-weight: bold;
+        }
+
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff1744;
+            font-size: 4rem;
+            font-weight: bold;
+            text-shadow: 0 0 20px black;
+            z-index: 90;
+        }
+    </style>
+
+    <!-- Three.js と PointerLockControls (カメラ操作用) の読み込み -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="blocker">
+        <div id="instructions">
+            <h1>FORTNITE MINI</h1>
+            <p style="font-size: 1.4rem;">クリックしてバトル開始！</p>
+            <div style="text-align: left; margin-top: 20px; line-height: 1.6;">
+                <strong>[W][A][S][D]</strong> : 移動<br>
+                <strong>[SPACE]</strong> : ジャンプ<br>
+                <strong>[マウス移動]</strong> : 視点移動<br>
+                <strong>[左クリック]</strong> : 銃を撃つ / 攻撃<br>
+                <strong>[F キー]</strong> : 目の前に「壁」を建築（木材10消費）<br>
+                <strong>[ESC]</strong> : メニューに戻る
+            </div>
+        </div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="game-over">GAME OVER</div>
+
+    <!-- HUD (UI) -->
+    <div id="hud">
+        <div class="hud-item">
+            HP
+            <div id="hp-bar-container">
+                <div id="hp-bar"></div>
+            </div>
+        </div>
+        <div class="hud-item">
+            🪵 木材: <span id="wood-count">100</span>
+        </div>
+    </div>
+
+    <div id="kill-counter">KILLS: <span id="kills">0</span></div>
+
+    <div id="game-container"></div>
+
+    <script>
+        // --- ゲームの変数定義 ---
+        let scene, camera, renderer, controls;
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, canJump = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        let prevTime = performance.now();
+        
+        let playerHp = 100;
+        let wood = 100;
+        let kills = 0;
+        let isGameOver = false;
+
+        const objects = []; // 衝突判定用のオブジェクト（床や建築物）
+        const enemies = []; // 敵のリスト
+        const bullets = []; // 銃弾のリスト
+        
+        const blocker = document.getElementById('blocker');
+        const instructions = document.getElementById('instructions');
+        const hpBar = document.getElementById('hp-bar');
+        const woodCountDisplay = document.getElementById('wood-count');
+        const killDisplay = document.getElementById('kills');
+        const gameOverDisplay = document.getElementById('game-over');
+
+        // --- 1. Three.js 初期化 ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // 青空
+            scene.fog = new THREE.FogExp2(0x87ceeb, 0.015); // 霧効果
+
+            // カメラ
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = 2; // プレイヤーの目の高さ
+
+            // 光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(20, 40, 20);
+            scene.add(dirLight);
+
+            // 地面 (Grass)
+            const floorGeo = new THREE.PlaneGeometry(1000, 1000);
+            const floorMat = new THREE.MeshLambertMaterial({ color: 0x4caf50 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+            objects.push(floor);
+
+            // レンダラー
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('game-container').appendChild(renderer.domElement);
+
+            // カメラロック（FPS操作）の設定
+            initPointerLock();
+
+            // イベントリスナー
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', shootBullet);
+
+            // 初期エネミーの生成
+            for (let i = 0; i < 5; i++) {
+                spawnEnemy();
+            }
+
+            animate();
+        }
+
+        // --- 2. 操作系 (PointerLock) ---
+        function initPointerLock() {
+            // 簡易的なカメラ回転実装 (PointerLockControlsの自作)
+            instructions.addEventListener('click', () => {
+                document.body.requestPointerLock();
+            });
+
+            document.addEventListener('pointerlockchange', () => {
+                if (document.pointerLockElement === document.body) {
+                    blocker.style.display = 'none';
+                } else {
+                    blocker.style.display = 'flex';
+                }
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (document.pointerLockElement !== document.body || isGameOver) return;
+                camera.rotation.y -= e.movementX * 0.002;
+                camera.rotation.x -= e.movementY * 0.002;
+                // 上下の首振りを制限
+                camera.rotation.x = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, camera.rotation.x));
+            });
+            camera.rotation.order = "YXZ"; // 回転の順番を固定
+        }
+
+        // キー入力
+        function onKeyDown(e) {
+            if (isGameOver) return;
+            switch (e.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': if (canJump === true) velocity.y += 150; canJump = false; break;
+                case 'KeyF': buildWall(); break; // Fキーで建築
+            }
+        }
+
+        function onKeyUp(e) {
+            switch (e.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- 3. 建築システム (Build System) ---
+        function buildWall() {
+            if (wood < 10) {
+                alert("木材が足りません！(敵を倒すと獲得できます)");
+                return;
+            }
+
+            // プレイヤーの向いている方向の少し前方に壁を置く
+            const buildDistance = 4;
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            dir.y = 0; // 高さは固定
+            dir.normalize();
+
+            const wallPos = camera.position.clone().add(dir.multiplyScalar(buildDistance));
+            
+            // 建築物の生成（木の壁）
+            const wallGeo = new THREE.BoxGeometry(4, 3, 0.5);
+            const wallMat = new THREE.MeshLambertMaterial({ color: 0x8d6e63 }); // 茶色
+            const wall = new THREE.Mesh(wallGeo, wallMat);
+            
+            // プレイヤーの向きに合わせて回転
+            wall.position.set(wallPos.x, 1.5, wallPos.z);
+            wall.rotation.y = camera.rotation.y;
+
+            scene.add(wall);
+            objects.push(wall); // 衝突判定リストに追加
+
+            // 資材を消費
+            wood -= 10;
+            woodCountDisplay.textContent = wood;
+
+            // 建築エフェクト音の代わりのフラッシュ
+            wall.scale.set(0.1, 0.1, 0.1);
+            let grow = setInterval(() => {
+                if(wall.scale.x < 1) {
+                    wall.scale.x += 0.1;
+                    wall.scale.y += 0.1;
+                    wall.scale.z += 0.1;
+                } else {
+                    clearInterval(grow);
+                }
+            }, 20);
+        }
+
+        // --- 4. 射撃システム (Gun & Combat) ---
+        function shootBullet() {
+            if (document.pointerLockElement !== document.body || isGameOver) return;
+
+            // 弾の生成
+            const bulletGeo = new THREE.SphereGeometry(0.1, 8, 8);
+            const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+
+            // 銃口の位置（カメラの少し右下前）
+            bullet.position.copy(camera.position);
+            
+            // 弾の飛ぶ方向
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            bullet.userData = {
+                direction: dir.clone(),
+                speed: 2.0,
+                aliveTime: 0
+            };
+
+            scene.add(bullet);
+            bullets.push(bullet);
+
+            // 射撃反動（カメラが少し上に揺れる）
+            camera.rotation.x += 0.01;
+        }
+
+        // --- 5. 敵システム (AI Enemies) ---
+        function spawnEnemy() {
+            const enemyGeo = new THREE.BoxGeometry(1.5, 2.5, 1.5);
+            const enemyMat = new THREE.MeshLambertMaterial({ color: 0xff1744 }); // 赤い敵
+            const enemy = new THREE.Mesh(enemyGeo, enemyMat);
+
+            // プレイヤーから離れたランダムな場所にスポーン
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 30 + Math.random() * 20;
+            enemy.position.set(
+                camera.position.x + Math.cos(angle) * distance,
+                1.25,
+                camera.position.z + Math.sin(angle) * distance
+            );
+
+            enemy.userData = { hp: 30 }; // 敵のHP
+            scene.add(enemy);
+            enemies.push(enemy);
+        }
+
+        // --- 6. ゲームループ・物理・アップデート ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (document.pointerLockElement === document.body && !isGameOver) {
+                const time = performance.now();
+                const delta = (time - prevTime) / 1000;
+
+                // --- プレイヤーの移動処理 ---
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= 9.8 * 50.0 * delta; // 重力
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                // 進行方向の計算
+                const camDir = new THREE.Vector3();
+                camera.getWorldDirection(camDir);
+                camDir.y = 0;
+                camDir.normalize();
+                
+                const camRight = new THREE.Vector3(-camDir.z, 0, camDir.x); // 右方向ベクトル
+
+                if (moveForward || moveBackward) {
+                    velocity.z -= direction.z * 150.0 * delta;
+                }
+                if (moveLeft || moveRight) {
+                    velocity.x -= direction.x * 150.0 * delta;
+                }
+
+                // プレイヤーの移動適用
+                camera.position.addScaledVector(camRight, -velocity.x * delta * 0.1);
+                camera.position.addScaledVector(camDir, -velocity.z * delta * 0.1);
+                camera.position.y += velocity.y * delta;
+
+                // 地面との当たり判定
+                if (camera.position.y < 2) {
+                    velocity.y = 0;
+                    camera.position.y = 2;
+                    canJump = true;
+                }
+
+                // --- 弾丸の移動と当たり判定 ---
+                for (let i = bullets.length - 1; i >= 0; i--) {
+                    const b = bullets[i];
+                    b.position.addScaledVector(b.userData.direction, b.userData.speed);
+                    b.userData.aliveTime += delta;
+
+                    let hit = false;
+
+                    // 敵との当たり判定
+                    for (let j = enemies.length - 1; j >= 0; j--) {
+                        const e = enemies[j];
+                        const dist = b.position.distanceTo(e.position);
+                        if (dist < 1.5) { // 直径判定
+                            e.userData.hp -= 10;
+                            scene.remove(b);
+                            bullets.splice(i, 1);
+                            hit = true;
+
+                            // 敵が死んだ場合
+                            if (e.userData.hp <= 0) {
+                                scene.remove(e);
+                                enemies.splice(j, 1);
+                                kills++;
+                                wood += 20; // 敵を倒すと木材ゲット
+                                killDisplay.textContent = kills;
+                                woodCountDisplay.textContent = wood;
+                                spawnEnemy(); // 新しい敵をスポーン
+                                if (kills % 3 === 0) spawnEnemy(); // 難易度上昇
+                            }
+                            break;
+                        }
+                    }
+
+                    if (hit) continue;
+
+                    // 建築物（壁）との当たり判定
+                    for (let wall of objects) {
+                        if (wall === objects[0]) continue; // 地面はスルー
+                        if (b.position.distanceTo(wall.position) < 2.2) {
+                            scene.remove(b);
+                            bullets.splice(i, 1);
+                            hit = true;
+                            break;
+                        }
+                    }
+
+                    if (hit) continue;
+
+                    // 射程距離外で消去
+                    if (b.userData.aliveTime > 2.0) {
+                        scene.remove(b);
+                        bullets.splice(i, 1);
+                    }
+                }
+
+                // --- 敵のAI（プレイヤー追尾と攻撃） ---
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    const e = enemies[i];
+                    
+                    // プレイヤーを向く
+                    const targetPos = camera.position.clone();
+                    targetPos.y = e.position.y; // Y軸は固定
+                    e.lookAt(targetPos);
+
+                    // プレイヤーに向かって移動
+                    const moveDir = new THREE.Vector3();
+                    moveDir.subVectors(targetPos, e.position).normalize();
+                    
+                    // 建築物（壁）があるかチェック（簡易的な衝突回避）
+                    let blocked = false;
+                    for (let wall of objects) {
+                        if (wall === objects[0]) continue;
+                        if (e.position.distanceTo(wall.position) < 3.0) {
+                            // 壁があったら壁を破壊しようとする
+                            blocked = true;
+                            wall.scale.x -= 0.005; // 壁の耐久力を削る
+                            wall.scale.y -= 0.005;
+                            if(wall.scale.x <= 0.1) {
+                                scene.remove(wall);
+                                objects.splice(objects.indexOf(wall), 1);
+                            }
+                            break;
+                        }
+                    }
+
+                    if (!blocked) {
+                        e.position.addScaledVector(moveDir, delta * 3.5); // 敵の移動速度
+                    }
+
+                    // プレイヤーへの攻撃判定
+                    const distToPlayer = e.position.distanceTo(camera.position);
+                    if (distToPlayer < 1.8) {
+                        playerHp -= 0.5; // 接触ダメージ
+                        hpBar.style.width = `${playerHp}%`;
+
+                        if (playerHp <= 0) {
+                            triggerGameOver();
+                        }
+                    }
+                }
+
+                prevTime = time;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- 7. ゲームオーバー処理 ---
+        function triggerGameOver() {
+            isGameOver = true;
+            gameOverDisplay.style.display = 'block';
+            document.exitPointerLock();
+            setTimeout(() => {
+                // 自動リスタート
+                location.reload();
+            }, 3000);
+        }
+
+        // ゲーム開始！
+        init();
+    </script>
+</body>
+</html>
